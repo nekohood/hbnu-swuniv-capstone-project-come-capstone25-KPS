@@ -1,83 +1,89 @@
 package com.dormitory.SpringBoot.config;
 
 import com.dormitory.SpringBoot.filter.JwtAuthenticationFilter;
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
-import org.springframework.http.HttpMethod;
+import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
-import org.springframework.security.config.annotation.web.configurers.HeadersConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.access.expression.method.DefaultMethodSecurityExpressionHandler;
+import org.springframework.security.access.expression.method.MethodSecurityExpressionHandler;
+import org.springframework.security.access.hierarchicalroles.RoleHierarchy;
+import org.springframework.security.access.hierarchicalroles.RoleHierarchyImpl;
+
+// CORS 관련 클래스 임포트
 import org.springframework.web.cors.CorsConfiguration;
 import org.springframework.web.cors.CorsConfigurationSource;
 import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
-
+import org.springframework.security.config.Customizer;
+import org.springframework.http.HttpMethod;
 import java.util.Arrays;
-import java.util.List;
 
 /**
- * Spring Security 설정 클래스 - 최종 수정 버전
+ * Spring Security 설정
+ * ✅ 수정: 비밀번호 변경 경로 명시적 허용 추가
+ * ✅ 수정: 사용자 정보 관련 경로 USER/ADMIN 모두 허용
  */
 @Configuration
 @EnableWebSecurity
+@EnableMethodSecurity(prePostEnabled = true)
 public class SecurityConfig {
 
-    @Autowired
-    private JwtAuthenticationFilter jwtAuthenticationFilter;
+    private final JwtAuthenticationFilter jwtAuthenticationFilter;
 
-    /**
-     * 비밀번호 인코더 빈 등록
-     */
+    public SecurityConfig(JwtAuthenticationFilter jwtAuthenticationFilter) {
+        this.jwtAuthenticationFilter = jwtAuthenticationFilter;
+    }
+
     @Bean
     public PasswordEncoder passwordEncoder() {
         return new BCryptPasswordEncoder();
     }
 
     /**
-     * CORS 설정 - 웹 개발 환경을 위한 최종 설정
+     * ✅ 역할 계층 설정 - ADMIN은 USER의 모든 권한을 자동으로 포함
+     * Spring Security 6.x 권장 방식 사용
+     */
+    @Bean
+    public RoleHierarchy roleHierarchy() {
+        // ROLE_ADMIN은 ROLE_USER의 모든 권한을 상속받음
+        return RoleHierarchyImpl.fromHierarchy("ROLE_ADMIN > ROLE_USER");
+    }
+
+    /**
+     * ✅ 메서드 보안 표현식 핸들러 - 역할 계층 적용
+     */
+    @Bean
+    public MethodSecurityExpressionHandler methodSecurityExpressionHandler(RoleHierarchy roleHierarchy) {
+        DefaultMethodSecurityExpressionHandler handler = new DefaultMethodSecurityExpressionHandler();
+        handler.setRoleHierarchy(roleHierarchy);
+        return handler;
+    }
+
+    /**
+     * 전역 CORS 설정
      */
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
 
-        // setAllowedOrigins 대신 setAllowedOriginPatterns를 사용하여 패턴으로 허용
-        // 이렇게 하면 localhost와 127.0.0.1의 모든 포트를 허용할 수 있습니다.
-        configuration.setAllowedOriginPatterns(Arrays.asList(
-                "http://localhost:*",
-                "http://127.0.0.1:*",
-                "http://10.0.2.2:*"  // Android 에뮬레이터용
-        ));
+        // 모든 출처 허용 (개발 환경)
+        configuration.setAllowedOrigins(Arrays.asList("*"));
 
-        // 허용할 HTTP 메서드 설정
-        configuration.setAllowedMethods(Arrays.asList(
-                "GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"
-        ));
+        // 모든 HTTP 메서드 허용
+        configuration.setAllowedMethods(Arrays.asList("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"));
 
-        // 허용할 헤더 설정
+        // 모든 헤더 허용
         configuration.setAllowedHeaders(Arrays.asList("*"));
 
-        // 자격 증명 허용
-        configuration.setAllowCredentials(true);
-
-        // preflight 요청의 캐시 시간
-        configuration.setMaxAge(3600L);
-
-        // 노출할 헤더 설정
-        configuration.setExposedHeaders(Arrays.asList(
-                "Authorization",
-                "Content-Type",
-                "X-Requested-With",
-                "Accept",
-                "Origin",
-                "Access-Control-Request-Method",
-                "Access-Control-Request-Headers"
-        ));
+        // 자격 증명 허용 (JWT 토큰 사용 시 false도 가능)
+        configuration.setAllowCredentials(false);
 
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
@@ -85,76 +91,59 @@ public class SecurityConfig {
         return source;
     }
 
-    /**
-     * 보안 필터 체인 설정
-     */
     @Bean
-    public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+    public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
-                // CORS 설정 활성화
-                .cors(cors -> cors.configurationSource(corsConfigurationSource()))
+                // 1. CORS 설정 적용
+                .cors(Customizer.withDefaults())
 
-                // CSRF 비활성화 (JWT 사용하므로)
+                // 2. CSRF 비활성화 (Stateless JWT 사용)
                 .csrf(AbstractHttpConfigurer::disable)
 
-                // 기본 폼 로그인 비활성화
-                .formLogin(AbstractHttpConfigurer::disable)
-
-                // HTTP Basic 인증 비활성화
-                .httpBasic(AbstractHttpConfigurer::disable)
-
-                // 세션 관리 설정 (JWT 사용하므로 STATELESS)
-                .sessionManagement(session ->
-                        session.sessionCreationPolicy(SessionCreationPolicy.STATELESS)
+                // 3. 세션 정책 설정 (Stateless)
+                .sessionManagement(session -> session
+                        .sessionCreationPolicy(SessionCreationPolicy.STATELESS)
                 )
 
-                // 헤더 설정
-                .headers(headers ->
-                        headers.frameOptions(HeadersConfigurer.FrameOptionsConfig::deny)
-                )
+                // 4. JWT 필터 추가
+                .addFilterBefore(jwtAuthenticationFilter,
+                        UsernamePasswordAuthenticationFilter.class)
 
-                // 요청별 권한 설정
-                .authorizeHttpRequests(auth -> auth
-                        // OPTIONS 요청은 모든 경로에서 허용
-                        .requestMatchers(HttpMethod.OPTIONS, "/**").permitAll()
+                // 5. 경로별 접근 권한 설정
+                .authorizeHttpRequests(authorize -> authorize
+                        // ✅ 인증 없이 허용되는 경로들
+                        .requestMatchers("/api/auth/**").permitAll()  // 로그인, 회원가입, 토큰 검증
+                        .requestMatchers("/hello", "/actuator/health").permitAll()  // 헬스체크
+                        .requestMatchers("/swagger-ui/**", "/v3/api-docs/**", "/swagger-ui.html").permitAll()  // Swagger
+                        .requestMatchers("/uploads/**").permitAll()  // 파일 업로드
 
-                        // 인증이 필요없는 공개 엔드포인트
-                        .requestMatchers("/hello/**").permitAll()
-                        .requestMatchers("/api/auth/**").permitAll()
-                        .requestMatchers("/actuator/health").permitAll()
-                        .requestMatchers("/swagger-ui/**").permitAll()
-                        .requestMatchers("/v3/api-docs/**").permitAll()
-                        .requestMatchers("/swagger-ui.html").permitAll()
-                        .requestMatchers("/uploads/**").permitAll() // 업로드된 파일 접근
+                        // ✅ 학번 허용 여부 확인 (회원가입 시 사용 - 인증 불필요)
+                        .requestMatchers("/api/allowed-users/check/**").permitAll()
 
-                        // 관리자만 접근 가능한 엔드포인트
-                        .requestMatchers("/api/admin/**").hasRole("ADMIN")
-                        .requestMatchers("/api/inspections/admin/**").hasRole("ADMIN")
-                        .requestMatchers("/api/notices/admin/**").hasRole("ADMIN")
+                        // ✅ 허용 사용자 관리 - 관리자 전용 (GET/POST/PUT/DELETE 모두)
+                        .requestMatchers(HttpMethod.GET, "/api/allowed-users/list").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.GET, "/api/allowed-users/{userId}").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.POST, "/api/allowed-users/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.PUT, "/api/allowed-users/**").hasRole("ADMIN")
+                        .requestMatchers(HttpMethod.DELETE, "/api/allowed-users/**").hasRole("ADMIN")
 
-                        // 서류 관련 엔드포인트 - 인증된 사용자 모두 접근 가능
-                        .requestMatchers(HttpMethod.GET, "/api/documents/**").authenticated()
-                        .requestMatchers(HttpMethod.POST, "/api/documents").authenticated()
-                        .requestMatchers(HttpMethod.POST, "/api/documents/submit-json").authenticated() // JSON 엔드포인트 추가
-                        .requestMatchers(HttpMethod.PUT, "/api/documents/*/status").hasRole("ADMIN") // 상태 변경은 관리자만
-                        .requestMatchers(HttpMethod.DELETE, "/api/documents/*").hasRole("ADMIN") // 삭제는 관리자만
+                        // ✅ [추가] 사용자 정보 관련 - 인증된 사용자 모두 허용 (USER, ADMIN)
+                        .requestMatchers(HttpMethod.GET, "/api/users/me").hasAnyRole("USER", "ADMIN")
+                        .requestMatchers(HttpMethod.PUT, "/api/users/me").hasAnyRole("USER", "ADMIN")
+                        .requestMatchers(HttpMethod.PUT, "/api/users/me/password").hasAnyRole("USER", "ADMIN")
 
-                        // 점호 관련 엔드포인트 - 인증된 사용자 모두 접근 가능
-                        .requestMatchers(HttpMethod.GET, "/api/inspections/**").authenticated()
-                        .requestMatchers(HttpMethod.POST, "/api/inspections/**").authenticated()
+                        // ✅ 민원 제출 허용 (JWT 필터에서 인증 확인, 컨트롤러에서 권한 확인)
+                        .requestMatchers("/api/complaints").permitAll()
 
-                        // 공지사항 관련 엔드포인트 - 조회는 모두, 작성/수정/삭제는 관리자만
-                        .requestMatchers(HttpMethod.GET, "/api/notices/**").authenticated()
-                        .requestMatchers(HttpMethod.POST, "/api/notices").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.PUT, "/api/notices/**").hasRole("ADMIN")
-                        .requestMatchers(HttpMethod.DELETE, "/api/notices/**").hasRole("ADMIN")
+                        // ✅ 서류 제출 허용 (JWT 필터에서 인증 확인, 컨트롤러에서 권한 확인)
+                        .requestMatchers("/api/documents").permitAll()
 
-                        // 그 외 모든 요청은 인증 필요
+                        // ✅ 관리자는 모든 API에 접근 가능
+                        .requestMatchers("/api/**").hasAnyRole("ADMIN", "USER")
+
+                        // 기타 모든 요청은 인증 필요
                         .anyRequest().authenticated()
-                )
-
-                // JWT 인증 필터 추가
-                .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+                );
 
         return http.build();
     }
